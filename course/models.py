@@ -1,17 +1,8 @@
 from django.db import models
-from django.db.models import IntegerField, F
+from django.db.models import Q
 from django.core.validators import FileExtensionValidator
 from django.contrib.auth import get_user_model
 from course.utils.models import BaseModel
-
-'''
-Category, Course, Lesson, Comment
-
-Category => (title, )
-Course => (title, category, is_finished, image, price, discount, status, author, is_bought)
-Lesson => (course, title, content, photo, video, is_view)
-Comment => (user, content, rating, course)
-'''
 
 
 class Category(BaseModel):
@@ -50,22 +41,31 @@ class Course(BaseModel):
     def __repr__(self):
         return f'Course(pk={self.pk}, title="{self.title}")'
 
-    @property
-    def current_price(self):
-        return IntegerField()
-
 
 class UserCourse(BaseModel):
+    class PaymentType(models.TextChoices):
+        PAYME = 'PM', 'Payme',
+        APELSIN = 'AP', 'Apelsin'
+        CLICK = 'CL', 'Click',
+        VISA = 'VS', 'Visa'
+        __empty__ = None
+
     course = models.ForeignKey(Course, on_delete=models.CASCADE,
                                related_name='user_courses')
     user = models.ForeignKey(get_user_model(), on_delete=models.CASCADE,
                              related_name='user_courses')
-
+    payment_type = models.CharField(max_length=2, choices=PaymentType.choices,
+                                    default=PaymentType.__empty__)
     is_bought = models.BooleanField(default=False)
     is_finished = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ('course', 'user')
+
+    def finished(self):
+        if len(self.user_lessons.filter(Q(status__in=['NW', 'PR']))) == 0:
+            self.is_finished = True
+            self.save()
 
     def __str__(self):
         return f'{self.user}\'s {self.course} course.'
@@ -75,29 +75,54 @@ class UserCourse(BaseModel):
 
 
 class UserLesson(BaseModel):
-    user = models.ForeignKey(get_user_model(), on_delete=models.CASCADE,
-                             related_name='user_lessons')
+
+    class Status(models.TextChoices):
+        FINISHED = 'FI', 'Ko\'rilgan'
+        IN_PROGRESS = 'PR', 'Jarayonda'
+        NO_WATCH = 'NW', 'Ko\'rilmagan'
+
+    user_course = models.ForeignKey(UserCourse, on_delete=models.CASCADE,
+                                    related_name='user_lessons')
     lesson = models.ForeignKey('Lesson', on_delete=models.CASCADE,
                                related_name='user_lessons')
-    is_view = models.BooleanField(default=False)
+    status = models.CharField(max_length=2, choices=Status.choices,
+                              default=Status.NO_WATCH)
+    total_time = models.IntegerField()
+    current_watch_time = models.IntegerField(default=0)
 
     class Meta:
-        unique_together = ('user', 'lesson',)
+        unique_together = ('user_course', 'lesson',)
 
-    def save(self, *args, **kwargs):
-        if self.user.user_courses:
-            courses = self.user.user_courses.all()
-            for c in courses:
-                course = c.course
-                if course.lessons.filter(pk=self.lesson.pk).exists():
-                    continue
-                else:
-                    raise
+    def change_status(self):
+        if self.current_watch_time > self.total_time * 0.9:
+            self.status = self.Status.FINISHED
+        elif self.current_watch_time > 0:
+            self.status = self.Status.IN_PROGRESS
+        else:
+            self.status = self.Status.NO_WATCH
+        self.save()
 
-        return super().save(*args, **kwargs)
+    def change_current_watched_time(self):
+        watched_times = self.user_lesson_watched.filter(is_used=False)
+        for w_time in watched_times:
+            w_time.is_used = True
+            w_time.save()
+            self.current_watch_time += w_time.to_time - w_time.from_time
+        self.save()
 
     def __str__(self):
-        return f'{self.user}\'s {self.lesson}'
+        return f'{self.user_course}\'s {self.lesson}'
+
+
+class UserLessonWatched(BaseModel):
+    user_lesson = models.ForeignKey(UserLesson, on_delete=models.CASCADE,
+                                    related_name='user_lesson_watched')
+    from_time = models.IntegerField(default=0)
+    to_time = models.IntegerField(default=0)
+    is_used = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f'{self.user_lesson}, ({self.from_time}, {self.to_time})'
 
 
 class Lesson(BaseModel):
@@ -129,3 +154,8 @@ class Comment(BaseModel):
 
     content = models.CharField(max_length=400)
     rating = models.SmallIntegerField(default=0)
+
+
+
+
+
